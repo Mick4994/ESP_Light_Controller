@@ -6,12 +6,36 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <Adafruit_NeoPixel.h>
+
+#define LED_PIN 8         // 板载RGB灯珠的引脚，根据实际使用的开发板型号而定
+#define LED_COUNT 1         // LED灯条的灯珠数量（板载的是一颗）
+
+// 0：未联网， -1：非正确工作状态（请求失败，获取时间失败），1：正常运行， 2：非工作日
+#define OFFLINE 0
+#define ERROR -1
+#define NORMAL 1
+#define NOT_WORKDAY 2
+
+/*
+使用 Adafruit_NeoPixel 库创建了一个名为 strip 的对象，控制LED灯珠
+LED_COUNT 表示 LED 条上的 LED 数量，LED_PIN 表示连接到 Arduino 的引脚，NEO_GRB + NEO_KHZ800 用于设置 LED 条的颜色排列和通信速率
+*/ 
+Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
+
+// 程序工作状态，
+int work_state = OFFLINE;
 
 const char* ssid = "Xiaomi_Mick";
 const char* password = "13433780355";
 
 // 查询节假日url
 String url = "https://api.apihubs.cn/holiday/get";
+
+// 时间表
+int open_schedules[] = {748};
+int close_schedules[] = {100, 805};
+int is_workday = 1;
 
 //延时：ms
 int t = 150; 
@@ -46,6 +70,7 @@ void init_network() {
   Serial.println("连接成功");
   Serial.print("IP 地址：");
   Serial.println(WiFi.localIP());
+  work_state = NORMAL;
 }
 
 void open_light() {
@@ -71,22 +96,47 @@ void init_servo() {
   ledcAttachPin(PWM_PIN,channel_PWM);  
 }
 
-void request() {
+int getMonthDay() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo))
+  {
+    Serial.println("Failed to obtain time");
+    work_state = -1;
+    return 0;
+  }
+  return timeinfo.tm_mday;
+}
+
+void requestIsWorkday() {
   // 创建 HTTPClient 对象
   HTTPClient http;
 
   // 发送GET请求
   http.begin(url);
 
+  int httpCode = http.GET();
+
+  if(httpCode <= 0) {
+    work_state = ERROR;
+    Serial.println("Request Failed");
+    return;
+  }
+
+  if(httpCode != HTTP_CODE_OK) {
+    work_state = ERROR;
+    Serial.println("Request Failed");
+    return;
+  }
+
   // 获取响应正文
   String response = http.getString();
-  Serial.println("响应数据");
+  // Serial.println("响应数据");
   // Serial.println(response);
 
   http.end();
 
   // 创建 DynamicJsonDocument 对象
-  DynamicJsonDocument doc(1024);
+  DynamicJsonDocument doc(16384);
 
   // 解析 JSON 数据
   deserializeJson(doc, response);
@@ -94,8 +144,41 @@ void request() {
   // 从解析后的 JSON 文档中获取值
   int code = doc["code"].as<int>();
 
-  if(code == 0) {
-    
+  if(code != 0) {
+    work_state = ERROR;
+    Serial.println("Request Failed");
+    return;
+  }
+
+  int mday = getMonthDay();
+
+  if(!mday) {
+    Serial.println("getMonthDay Failed");
+    return;
+  }
+
+  // 解析 json 对象到是否是工作日字段
+  JsonArray months = doc["data"]["list"];
+  int total = doc["data"]["total"];
+
+  int index = total - mday;
+
+  Serial.printf("api's index: %d\n", index);
+  JsonObject current_day = months[index];
+
+  int today = current_day["workday"];
+  int date = current_day["date"];
+
+  Serial.printf("api's date: %d\n", date);
+
+  if(today == 1) {
+    work_state = NORMAL;
+    Serial.println("is workday");
+    is_workday = 1;
+  } else {
+    work_state = NOT_WORKDAY;
+    Serial.println("Not workday");
+    is_workday = 0;
   }
 }
 
@@ -105,23 +188,99 @@ const int daylightOffset_sec = 0;
 
 void printLocalTime()
 {
-    struct tm timeinfo;
-    if (!getLocalTime(&timeinfo))
-    {
-      Serial.println("Failed to obtain time");
-      return;
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo))
+  {
+    Serial.println("Failed to obtain time");
+    work_state = ERROR;
+    return;
+  }
+  Serial.println(&timeinfo, "%F %T %A"); // 格式化输出
+}
+
+int getHourMinu() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    Serial.println("Failed to obtain time");
+    return -1;
+  }
+  return timeinfo.tm_hour * 100 + timeinfo.tm_min;
+}
+
+void Scheduler() {
+  int current_time = getHourMinu();
+
+  // 每天0点查今日是否工作日
+  if(current_time == 0) {
+    requestIsWorkday();
+  }
+
+  // 工作日再开启
+  if(is_workday) {
+    for(int schedule : close_schedules) {
+      if(schedule == current_time) {
+        close_light();
+      }
     }
-    Serial.println(&timeinfo, "%F %T %A"); // 格式化输出
+    for(int schedule : open_schedules) {
+      if(schedule == current_time) {
+        open_light();
+      }
+    }
+  }
+}
+
+void LED_WorkState() {
+  if(work_state) {
+    switch (work_state) {
+      case NORMAL:
+        // 设置灯珠为绿色 (正确的工作状态)
+        strip.setPixelColor(0, strip.Color(0, 255, 0)); 
+        break;
+      case NOT_WORKDAY:
+        // 设置灯珠为蓝色 (非工作日)
+        strip.setPixelColor(0, strip.Color(0, 0, 255)); 
+        break;
+      default:
+        // 设置灯珠为黄色 (未处于正确的工作状态)
+        strip.setPixelColor(0, strip.Color(255, 255, 0)); 
+        break;
+    }
+  } else {
+    // 设置灯珠为红色 (未联网状态)
+    strip.setPixelColor(0, strip.Color(255, 255, 0)); 
+  }
+  strip.show(); // 显示颜色
 }
 
 void setup() {
   init_servo();
   init_network();
-  // request();
+  
+  // 板载 LED灯 初始化
+  strip.begin();
+  strip.setBrightness(50); // 设置亮度（0-255范围）
+
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  requestIsWorkday();
   printLocalTime();
 }
 
 void loop() {
 
+  // 联网时进行
+  if(work_state) {
+    Scheduler();
+    LED_WorkState();
+  }
+
+  delay(30 * 1000);
+
+  // Wi-Fi 断联自动重连
+  if(WiFi.status() != WL_CONNECTED) {
+    work_state = OFFLINE;
+    Serial.println("Reconnecting to WiFi...");
+    WiFi.disconnect();
+    WiFi.reconnect();
+  }
 }

@@ -17,6 +17,9 @@
 #define NORMAL 1
 #define NOT_WORKDAY 2
 
+#define LOOP_TIME 30
+
+#define BRIGHTNESS 25
 /*
 使用 Adafruit_NeoPixel 库创建了一个名为 strip 的对象，控制LED灯珠
 LED_COUNT 表示 LED 条上的 LED 数量，LED_PIN 表示连接到 Arduino 的引脚，NEO_GRB + NEO_KHZ800 用于设置 LED 条的颜色排列和通信速率
@@ -35,10 +38,12 @@ String url = "https://api.apihubs.cn/holiday/get";
 // 时间表
 int open_schedules[] = {748};
 int close_schedules[] = {100, 805};
-int is_workday = 1;
+
+// 默认非工作日
+int is_workday = 0;
 
 //延时：ms
-int t = 150; 
+int servo_t = 150; 
 
 //使用3号通道 定时器1  总共16个通道 
 int channel_PWM = 3;  
@@ -76,7 +81,7 @@ void init_network() {
 void open_light() {
   // 向下按
   ledcWrite(channel_PWM, 102);
-  delay(t);
+  delay(servo_t);
   // 停止
   ledcWrite(channel_PWM, 77);
 }
@@ -84,7 +89,7 @@ void open_light() {
 void close_light() {
   // 向上按
   ledcWrite(channel_PWM, 52);
-  delay(t);
+  delay(servo_t);
   // 停止
   ledcWrite(channel_PWM, 77);
 }
@@ -259,7 +264,7 @@ void setup() {
   
   // 板载 LED灯 初始化
   strip.begin();
-  strip.setBrightness(50); // 设置亮度（0-255范围）
+  strip.setBrightness(BRIGHTNESS); // 设置亮度（0-255范围）
 
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
   requestIsWorkday();
@@ -274,7 +279,7 @@ void loop() {
     LED_WorkState();
   }
 
-  delay(30 * 1000);
+  delay(LOOP_TIME * 1000);
 
   // Wi-Fi 断联自动重连
   if(WiFi.status() != WL_CONNECTED) {
